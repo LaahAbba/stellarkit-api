@@ -421,6 +421,103 @@ export interface HealthResponse {
   }
 }
 
+/**
+ * Liquidity pool position information
+ */
+export interface PoolPosition {
+  poolId: string
+  shares: StellarAmount
+  sharePercent: string
+  totalPoolShares: StellarAmount
+  reserveA: {
+    asset: string
+    totalAmount: StellarAmount
+    equivalentAmount: StellarAmount
+  }
+  reserveB: {
+    asset: string
+    totalAmount: StellarAmount
+    equivalentAmount: StellarAmount
+  }
+  feeBp: number
+  totalTrustlines: number
+  lastModifiedLedger: number
+}
+
+/**
+ * Response from GET /account/:id/pool-positions
+ * Returns all liquidity pool positions for an account with calculated share values.
+ */
+export interface PoolPositionsResponse {
+  success: true
+  data: PoolPosition[]
+  meta: {
+    count: number
+    accountId: StellarPublicKey
+    message?: string
+  }
+}
+
+/**
+ * Response from GET /account/:id/transactions/search
+ * Returns transactions filtered by memo content.
+ */
+export interface TransactionSearchResponse {
+  success: true
+  data: TransactionRecord[]
+  meta: {
+    count: number
+    limit: number
+    order: 'asc' | 'desc'
+    searchQuery: {
+      memo: string
+      memoType: 'text' | 'id' | 'hash' | 'return' | 'any'
+    }
+    nextCursor: string | null
+    hasMore: boolean
+  }
+}
+
+/**
+ * Query parameters for GET /account/:id/transactions/search
+ */
+export interface TransactionSearchParams {
+  memo: string
+  memo_type?: 'text' | 'id' | 'hash' | 'return'
+  limit?: number
+  cursor?: string
+  order?: 'asc' | 'desc'
+}
+
+/**
+ * Response from GET /dex/spread/:sellAsset/:buyAsset
+ * Returns bid-ask spread data for a DEX trading pair.
+ */
+export interface SpreadResponse {
+  success: true
+  data: {
+    bestBid: {
+      price: StellarAmount
+      amount: StellarAmount
+    } | null
+    bestAsk: {
+      price: StellarAmount
+      amount: StellarAmount
+    } | null
+    spreadAbsolute: StellarAmount | null
+    spreadPercent: string | null
+    midPrice: StellarAmount | null
+    liquidity: 'high' | 'medium' | 'low'
+    orderBookDepth: {
+      bids: number
+      asks: number
+      totalBidVolume: StellarAmount
+      totalAskVolume: StellarAmount
+      totalVolume: StellarAmount
+    }
+  }
+}
+
 // ============================================================
 // REQUEST PARAMETER TYPES
 // ============================================================

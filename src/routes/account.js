@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const { server } = require("../config/stellar");
 const { success } = require("../utils/response");
-const { validateAccountId, validateLimit } = require("../utils/validators");
+const { validateAccountId, validateAssetCode, validateLimit } = require("../utils/validators");
 const { accountSummaryRateLimiter } = require("../middleware/rateLimiter");
 
 const handleAccountNotFound = (err, next) => {
@@ -83,11 +83,11 @@ router.get("/:id", async (req, res, next) => {
         spendableBalance: spendable.toFixed(7),
       },
       reserveBreakdown: {
-        baseReserve:       { xlm: toXLM(baseReserve),     stroops: toStroops(baseReserve) },
-        accountReserve:    { xlm: toXLM(accountReserve),  stroops: toStroops(accountReserve) },
-        subentryReserve:   { xlm: toXLM(subentryReserve), stroops: toStroops(subentryReserve) },
-        totalLocked:       { xlm: toXLM(totalLocked),     stroops: toStroops(totalLocked) },
-        spendable:         { xlm: toXLM(spendable),       stroops: toStroops(spendable) },
+        baseReserve: { xlm: toXLM(baseReserve), stroops: toStroops(baseReserve) },
+        accountReserve: { xlm: toXLM(accountReserve), stroops: toStroops(accountReserve) },
+        subentryReserve: { xlm: toXLM(subentryReserve), stroops: toStroops(subentryReserve) },
+        totalLocked: { xlm: toXLM(totalLocked), stroops: toStroops(totalLocked) },
+        spendable: { xlm: toXLM(spendable), stroops: toStroops(spendable) },
       },
       assets: balances.assets,
       assetCount: balances.assets.length,
@@ -123,6 +123,105 @@ router.get("/:id/balances", async (req, res, next) => {
     const account = await server.loadAccount(id);
 
     return success(res, formatAccountBalances(account));
+  } catch (err) {
+    handleAccountNotFound(err, next);
+  }
+});
+
+/**
+ * GET /account/:id/freeze-status/:assetCode/:assetIssuer
+ * Checks whether a specific asset trustline is frozen or partially frozen.
+ *
+ * @param {string} id - Stellar account public key (G...)
+ * @param {string} assetCode - Asset code to inspect (e.g. USD)
+ * @param {string} assetIssuer - Asset issuer public key or native
+ */
+router.get("/:id/freeze-status/:assetCode/:assetIssuer", async (req, res, next) => {
+  try {
+    const { id, assetCode, assetIssuer } = req.params;
+    validateAccountId(id);
+    validateAssetCode(assetCode);
+
+    const normalizedAssetCode = assetCode.toUpperCase();
+    const normalizedAssetIssuer =
+      normalizedAssetCode === "XLM" ? assetIssuer.toLowerCase() : assetIssuer;
+
+    if (normalizedAssetCode === "XLM") {
+      if (normalizedAssetIssuer !== "native") {
+        const err = new Error('Invalid asset issuer for XLM. Use "native" as the issuer.');
+        err.isValidation = true;
+        throw err;
+      }
+    } else {
+      validateAccountId(assetIssuer);
+    }
+
+    const account = await server.loadAccount(id);
+
+    const trustline =
+      normalizedAssetCode === "XLM"
+        ? account.balances.find((b) => b.asset_type === "native")
+        : account.balances.find(
+          (b) =>
+            b.asset_type !== "native" &&
+            b.asset_code === normalizedAssetCode &&
+            b.asset_issuer === assetIssuer,
+        );
+
+    if (!trustline) {
+      const notFoundErr = new Error(
+        `Account does not hold asset ${normalizedAssetCode}:${assetIssuer}.`
+      );
+      notFoundErr.status = 404;
+      throw notFoundErr;
+    }
+
+    const isAuthorized = trustline.is_authorized !== false;
+    const isAuthorizedToMaintainLiabilities =
+      trustline.is_authorized_to_maintain_liabilities === true;
+    const isFrozen =
+      normalizedAssetCode === "XLM"
+        ? false
+        : !isAuthorized && !isAuthorizedToMaintainLiabilities;
+    const isPartiallyFrozen =
+      normalizedAssetCode !== "XLM" &&
+      !isAuthorized &&
+      isAuthorizedToMaintainLiabilities;
+    const canReceive = normalizedAssetCode === "XLM" ? true : isAuthorized;
+    const canSend =
+      normalizedAssetCode === "XLM"
+        ? true
+        : isAuthorized || isAuthorizedToMaintainLiabilities;
+
+    const detail = (() => {
+      if (normalizedAssetCode === "XLM") {
+        return "Native XLM is not subject to issuer freeze authorization.";
+      }
+
+      if (!isAuthorized && isAuthorizedToMaintainLiabilities) {
+        return "The issuer has revoked authorization for this trustline but allows the account to maintain liabilities. The account can send via existing liabilities but cannot receive new amounts.";
+      }
+
+      if (!isAuthorized) {
+        return "The issuer has revoked authorization for this trustline. The account cannot send or receive the asset.";
+      }
+
+      return "The trustline is authorized and the account can send and receive this asset normally.";
+    })();
+
+    return success(res, {
+      accountId: account.id,
+      asset: {
+        assetCode: normalizedAssetCode,
+        assetIssuer:
+          normalizedAssetCode === "XLM" ? "native" : assetIssuer,
+      },
+      isFrozen,
+      isPartiallyFrozen,
+      canSend,
+      canReceive,
+      detail,
+    });
   } catch (err) {
     handleAccountNotFound(err, next);
   }
@@ -594,7 +693,7 @@ function evaluatePredicate(predicate, currentTime) {
 
   if (predicate.abs_before) {
     // Horizon might return ISO string or unix timestamp
-    const beforeTime = isNaN(predicate.abs_before) 
+    const beforeTime = isNaN(predicate.abs_before)
       ? Math.floor(new Date(predicate.abs_before).getTime() / 1000)
       : parseInt(predicate.abs_before);
     return currentTime < beforeTime;
@@ -663,7 +762,7 @@ router.get("/:id/claimable-balances/eligible", async (req, res, next) => {
       // - eligible: currently claimable
       // - notYetClaimable: has an abs_after predicate that isn't met yet
       // - expired: has an abs_before predicate that has passed
-      
+
       const formattedBalance = {
         id: cb.id,
         asset: cb.asset,
@@ -768,6 +867,273 @@ router.get("/:id/data/:key", async (req, res, next) => {
       key,
       rawValue,
       decodedValue,
+    });
+  } catch (err) {
+    handleAccountNotFound(err, next);
+  }
+});
+
+/**
+ * GET /account/:id/transactions/search
+ * Searches transaction history for a Stellar account and filters results by memo content.
+ * Useful for developers building payment reference tracking systems.
+ *
+ * Query params:
+ *   - memo        (string, required) - Memo value to search for
+ *   - memo_type   (string, optional) - Filter by memo type: text, id, hash, return
+ *   - limit       (number, default: 10, max: 200)
+ *   - cursor      (string, pagination cursor from previous response)
+ *   - order       ("asc" | "desc", default: "desc")
+ *
+ * @param {string} id - Stellar account public key (G...)
+ *
+ * @example
+ * GET /account/GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN/transactions/search?memo=invoice-123
+ * GET /account/GAAZI4.../transactions/search?memo=12345&memo_type=id
+ */
+router.get("/:id/transactions/search", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    validateAccountId(id);
+
+    // Validate required memo parameter
+    const memoQuery = req.query.memo;
+    if (!memoQuery) {
+      const err = new Error("Query parameter 'memo' is required.");
+      err.status = 400;
+      return next(err);
+    }
+
+    // Optional memo_type filter
+    const memoTypeFilter = req.query.memo_type ? String(req.query.memo_type).toLowerCase() : null;
+    const validMemoTypes = ["text", "id", "hash", "return"];
+
+    if (memoTypeFilter && !validMemoTypes.includes(memoTypeFilter)) {
+      const err = new Error(
+        `Invalid memo_type: "${req.query.memo_type}". Valid values are: text, id, hash, return.`
+      );
+      err.status = 400;
+      return next(err);
+    }
+
+    const limit = validateLimit(req.query.limit || 10, 200);
+    const order = req.query.order && ["asc", "desc"].includes(req.query.order)
+      ? req.query.order
+      : "desc";
+    const cursor = req.query.cursor || undefined;
+
+    // Fetch transactions from Horizon
+    // We'll fetch more than requested to account for filtering
+    const fetchLimit = Math.min(limit * 10, 200); // Fetch up to 10x or max 200
+
+    let query = server
+      .transactions()
+      .forAccount(id)
+      .limit(fetchLimit)
+      .order(order)
+      .includeFailed(false);
+
+    if (cursor) query = query.cursor(cursor);
+
+    const txResponse = await query.call();
+    const STROOPS_PER_XLM = 10_000_000;
+
+    // Filter transactions by memo
+    const matchingTransactions = [];
+    let lastCursor = null;
+
+    for (const tx of txResponse.records) {
+      lastCursor = tx.paging_token;
+
+      // Skip transactions without memos if we're searching for a memo
+      if (tx.memo_type === "none") {
+        continue;
+      }
+
+      // Apply memo_type filter if specified
+      if (memoTypeFilter && tx.memo_type !== memoTypeFilter) {
+        continue;
+      }
+
+      // Check if memo matches the search query
+      let memoMatches = false;
+      const memoValue = tx.memo || "";
+      const searchValue = String(memoQuery);
+
+      // For text memos, do case-insensitive substring match
+      if (tx.memo_type === "text") {
+        memoMatches = memoValue.toLowerCase().includes(searchValue.toLowerCase());
+      }
+      // For id, hash, return - do exact match
+      else if (tx.memo_type === "id" || tx.memo_type === "hash" || tx.memo_type === "return") {
+        memoMatches = memoValue === searchValue;
+      }
+
+      if (memoMatches) {
+        const chargedInStroops = parseInt(tx.fee_charged, 10);
+        const opCount = tx.operation_count || 1;
+        const perOpStroops = Math.floor(chargedInStroops / opCount);
+
+        matchingTransactions.push({
+          id: tx.id,
+          hash: tx.hash,
+          ledger: tx.ledger,
+          createdAt: tx.created_at,
+          sourceAccount: tx.source_account,
+          fee: {
+            charged: tx.fee_charged,
+            account: tx.fee_account,
+          },
+          feeSummary: {
+            chargedInStroops,
+            chargedInXLM: (chargedInStroops / STROOPS_PER_XLM).toFixed(7),
+            perOperationInStroops: perOpStroops,
+            perOperationInXLM: (perOpStroops / STROOPS_PER_XLM).toFixed(7),
+          },
+          operationCount: tx.operation_count,
+          memoType: tx.memo_type,
+          memo: tx.memo || null,
+          successful: tx.successful,
+          envelopeXdr: tx.envelope_xdr,
+        });
+
+        // Stop if we've collected enough matching transactions
+        if (matchingTransactions.length >= limit) {
+          break;
+        }
+      }
+    }
+
+    // Determine if there are more results
+    const hasMore = matchingTransactions.length === limit && txResponse.records.length === fetchLimit;
+    const nextCursor = matchingTransactions.length > 0
+      ? matchingTransactions[matchingTransactions.length - 1].id
+      : lastCursor;
+
+    return success(res, matchingTransactions, {
+      meta: {
+        count: matchingTransactions.length,
+        limit,
+        order,
+        searchQuery: {
+          memo: memoQuery,
+          memoType: memoTypeFilter || "any",
+        },
+        nextCursor: hasMore ? nextCursor : null,
+        hasMore,
+      },
+    });
+  } catch (err) {
+    handleAccountNotFound(err, next);
+  }
+});
+
+/**
+ * GET /account/:id/pool-positions
+ * Calculates the current value of a liquidity provider's position in all Stellar AMM pools
+ * based on their pool shares.
+ *
+ * For each pool, calculates:
+ * - The account's share percentage
+ * - Equivalent reserve amounts for both assets
+ *
+ * @param {string} id - Stellar account public key (G...)
+ *
+ * @example
+ * GET /account/GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN/pool-positions
+ */
+router.get("/:id/pool-positions", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    validateAccountId(id);
+
+    // Fetch account details to get trustlines
+    const account = await server.loadAccount(id);
+
+    // Filter trustlines to find liquidity pool shares
+    // Liquidity pool shares have asset_type === "liquidity_pool_shares"
+    const poolShareTrustlines = account.balances.filter(
+      (balance) => balance.asset_type === "liquidity_pool_shares"
+    );
+
+    if (poolShareTrustlines.length === 0) {
+      return success(res, [], {
+        meta: {
+          count: 0,
+          accountId: id,
+          message: "No liquidity pool positions found for this account.",
+        },
+      });
+    }
+
+    // Fetch pool details for all pools in parallel
+    const poolDetailsPromises = poolShareTrustlines.map((trustline) =>
+      server
+        .liquidityPools()
+        .liquidityPoolId(trustline.liquidity_pool_id)
+        .call()
+        .catch((err) => {
+          // If a pool is not found, return null instead of throwing
+          if (err.response && err.response.status === 404) {
+            return null;
+          }
+          throw err;
+        })
+    );
+
+    const poolDetails = await Promise.all(poolDetailsPromises);
+
+    // Calculate positions
+    const positions = [];
+
+    for (let i = 0; i < poolShareTrustlines.length; i++) {
+      const trustline = poolShareTrustlines[i];
+      const pool = poolDetails[i];
+
+      // Skip if pool was not found
+      if (!pool) {
+        continue;
+      }
+
+      const accountShares = parseFloat(trustline.balance);
+      const totalShares = parseFloat(pool.total_shares);
+
+      // Calculate share percentage
+      const sharePercent = totalShares > 0 ? (accountShares / totalShares) * 100 : 0;
+
+      // Calculate equivalent reserves
+      const reserveA = pool.reserves[0];
+      const reserveB = pool.reserves[1];
+
+      const equivalentReserveA = (parseFloat(reserveA.amount) * accountShares) / totalShares;
+      const equivalentReserveB = (parseFloat(reserveB.amount) * accountShares) / totalShares;
+
+      positions.push({
+        poolId: pool.id,
+        shares: accountShares.toFixed(7),
+        sharePercent: sharePercent.toFixed(4),
+        totalPoolShares: totalShares.toFixed(7),
+        reserveA: {
+          asset: reserveA.asset,
+          totalAmount: parseFloat(reserveA.amount).toFixed(7),
+          equivalentAmount: equivalentReserveA.toFixed(7),
+        },
+        reserveB: {
+          asset: reserveB.asset,
+          totalAmount: parseFloat(reserveB.amount).toFixed(7),
+          equivalentAmount: equivalentReserveB.toFixed(7),
+        },
+        feeBp: pool.fee_bp || 30,
+        totalTrustlines: pool.total_trustlines,
+        lastModifiedLedger: pool.last_modified_ledger,
+      });
+    }
+
+    return success(res, positions, {
+      meta: {
+        count: positions.length,
+        accountId: id,
+      },
     });
   } catch (err) {
     handleAccountNotFound(err, next);
