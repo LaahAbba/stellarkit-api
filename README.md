@@ -39,6 +39,31 @@ This project is ideal for:
 
 ---
 
+## API Quick Reference
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| GET | `/` | Lists available API endpoints and descriptions |
+| GET | `/health` | Returns basic service health status |
+| GET | `/network-status` | Returns current Stellar network and ledger info |
+| GET | `/fee-estimate` | Calculates fee estimates for a transaction |
+| GET | `/account/:id` | Retrieves full account details and balances |
+| GET | `/account/:id/balances` | Retrieves XLM and asset balances only |
+| GET | `/account/:id/sequence` | Retrieves the account sequence number |
+| GET | `/account/:id/summary` | Retrieves a compact account summary |
+| GET | `/account/:id/payments` | Lists payment and create_account operations |
+| GET | `/transactions/:id` | Retrieves paginated transaction history |
+| GET | `/transactions/:id/operations` | Retrieves paginated operation history |
+| GET | `/asset/:code/:issuer` | Retrieves metadata and statistics for an asset |
+| GET | `/asset/:code/:issuer/holders` | Lists holders of an asset trustline |
+| GET | `/asset/search` | Searches assets by code across issuers |
+| GET | `/stream/transactions/:id` | Streams live account transactions via SSE |
+| GET | `/utils/friendbot/:accountId` | Funds a testnet account via Friendbot |
+| GET | `/utils/memo` | Decodes Horizon memo data |
+| GET | `/utils/base64` | Encodes or decodes Base64 strings |
+
+---
+
 ## Project Structure
 
 - `src/index.js` — application entry point
