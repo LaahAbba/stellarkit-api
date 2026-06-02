@@ -204,4 +204,66 @@ router.get("/transactions/:id", async (req, res, next) => {
   });
 });
 
+/**
+ * GET /stream/ledgers
+ * Server-Sent Events endpoint that streams live Stellar ledger close events.
+ *
+ * SSE Events:
+ *   - data: JSON with { sequence, closedAt, baseFee, transactionCount, operationCount }
+ *   - comment (": ping"): heartbeat every 30 seconds
+ */
+router.get("/ledgers", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+
+  let closeStream;
+  let heartbeatInterval;
+
+  try {
+    closeStream = server
+      .ledgers()
+      .cursor("now")
+      .stream({
+        onmessage: (ledger) => {
+          if (res.writableEnded || res.destroyed) {
+            closeStream && closeStream();
+            return;
+          }
+          const payload = {
+            sequence: ledger.sequence,
+            closedAt: ledger.closed_at,
+            baseFee: ledger.base_fee_in_stroops,
+            transactionCount: ledger.successful_transaction_count,
+            operationCount: ledger.operation_count,
+          };
+          res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        },
+        onerror: () => {
+          if (!res.writableEnded && !res.destroyed) res.end();
+          closeStream && closeStream();
+          clearInterval(heartbeatInterval);
+        },
+      });
+  } catch {
+    if (!res.writableEnded && !res.destroyed) res.end();
+    return;
+  }
+
+  heartbeatInterval = setInterval(() => {
+    if (res.writableEnded || res.destroyed) {
+      clearInterval(heartbeatInterval);
+      return;
+    }
+    res.write(": ping\n\n");
+  }, 30_000);
+
+  req.on("close", () => {
+    clearInterval(heartbeatInterval);
+    closeStream && closeStream();
+  });
+});
+
 module.exports = router;
