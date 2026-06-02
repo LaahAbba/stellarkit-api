@@ -13,6 +13,7 @@ const contentTypeValidator = require("./middleware/contentTypeValidator");
 const bodySizeLimit = require("./middleware/bodySizeLimit");
 const errorHandler = require("./middleware/errorHandler");
 const apiKeyMiddleware = require("./middleware/apiKey");
+const sanitize = require("./middleware/sanitize");
 
 const networkStatusRouter = require("./routes/networkStatus");
 const feeEstimateRouter = require("./routes/feeEstimate");
@@ -40,6 +41,9 @@ app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
 // ── Rate Limiting ───────────────────────────────────────────────────────────
 app.use(rateLimiter);
+
+// ── Input Sanitization ──────────────────────────────────────────────────────
+app.use(sanitize);
 
 // ── Health Check ────────────────────────────────────────────────────────────
 app.get("/health", (req, res) => {

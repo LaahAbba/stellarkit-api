@@ -1,0 +1,117 @@
+const request = require("supertest");
+const app = require("../src/index");
+
+describe("Sanitize Middleware", () => {
+  describe("Whitespace trimming", () => {
+    it("trims leading and trailing whitespace from query params", async () => {
+      const res = await request(app).get("/utils/validate-account?id=%20GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN%20");
+      // The trimmed value should be passed to the route - not a whitespace error
+      expect(res.statusCode).not.toBe(400);
+    });
+  });
+
+  describe("Null byte stripping", () => {
+    it("strips null bytes from query params", async () => {
+      const res = await request(app).get("/health?foo=bar%00baz");
+      expect(res.statusCode).toBe(200);
+    });
+
+    it("strips null bytes from path params", async () => {
+      // A null byte in a path param would result in a bad key, not a crash
+      const res = await request(app).get("/account/GAAZI%004TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN");
+      // Should not return 500
+      expect(res.statusCode).not.toBe(500);
+    });
+  });
+
+  describe("Length enforcement", () => {
+    it("returns 400 when a query param exceeds 500 characters", async () => {
+      const longValue = "A".repeat(501);
+      const res = await request(app).get(`/health?foo=${longValue}`);
+      expect(res.statusCode).toBe(400);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.type).toBe("ValidationError");
+      expect(res.body.error.message).toContain("500");
+    });
+
+    it("returns 400 when a path param exceeds 500 characters", async () => {
+      const longValue = "A".repeat(501);
+      const res = await request(app).get(`/account/${longValue}`);
+      expect(res.statusCode).toBe(400);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error.type).toBe("ValidationError");
+    });
+
+    it("allows params exactly at the 500 character limit", async () => {
+      const exactValue = "A".repeat(500);
+      const res = await request(app).get(`/health?foo=${exactValue}`);
+      // Should not return 400 for length
+      expect(res.statusCode).not.toBe(400);
+    });
+  });
+
+  describe("Unit tests for sanitize function", () => {
+    const sanitize = require("../src/middleware/sanitize");
+
+    it("calls next() for valid input", (done) => {
+      const req = { params: { id: "valid" }, query: { foo: "bar" } };
+      const res = {};
+      sanitize(req, res, () => {
+        expect(req.params.id).toBe("valid");
+        expect(req.query.foo).toBe("bar");
+        done();
+      });
+    });
+
+    it("trims whitespace from params and query", (done) => {
+      const req = { params: { id: "  hello  " }, query: { q: "  world  " } };
+      const res = {};
+      sanitize(req, res, () => {
+        expect(req.params.id).toBe("hello");
+        expect(req.query.q).toBe("world");
+        done();
+      });
+    });
+
+    it("removes null bytes from params and query", (done) => {
+      const req = { params: { id: "hel\0lo" }, query: { q: "wo\0rld" } };
+      const res = {};
+      sanitize(req, res, () => {
+        expect(req.params.id).toBe("hello");
+        expect(req.query.q).toBe("world");
+        done();
+      });
+    });
+
+    it("returns 400 JSON for param exceeding 500 chars", (done) => {
+      const req = { params: { id: "A".repeat(501) }, query: {} };
+      const res = {
+        status(code) { this._code = code; return this; },
+        json(body) {
+          expect(this._code).toBe(400);
+          expect(body.success).toBe(false);
+          expect(body.error.type).toBe("ValidationError");
+          done();
+        },
+      };
+      sanitize(req, res, () => {
+        done(new Error("next() should not have been called"));
+      });
+    });
+
+    it("returns 400 JSON for query value exceeding 500 chars", (done) => {
+      const req = { params: {}, query: { foo: "B".repeat(501) } };
+      const res = {
+        status(code) { this._code = code; return this; },
+        json(body) {
+          expect(this._code).toBe(400);
+          expect(body.success).toBe(false);
+          done();
+        },
+      };
+      sanitize(req, res, () => {
+        done(new Error("next() should not have been called"));
+      });
+    });
+  });
+});
